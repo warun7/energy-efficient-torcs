@@ -1,0 +1,5 @@
+numpy>=1.23,<3
+gymnasium>=0.29.0
+tensorflow-cpu>=2.13,<2.17
+tf_keras>=2.15.0
+matplotlib>=3.7.0

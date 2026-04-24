@@ -1,0 +1,10 @@
+.venv/
+venv/
+build/
+artifacts/
+__pycache__/
+*.py[cod]
+*.h5
+.pytest_cache/
+.torcs-rebuild/
+*.log

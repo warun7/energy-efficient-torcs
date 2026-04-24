@@ -61,6 +61,8 @@ import getopt
 import os
 import time
 PI= 3.14159265359
+unicode = str
+unichr = chr
 
 data_size = 2**17
 
@@ -130,6 +132,8 @@ class Client(object):
         self.stage= 3 # 0=Warm-up, 1=Qualifying 2=Race, 3=unknown <Default=3>
         self.debug= False
         self.maxSteps= 100000  # 50steps/second
+        self.min_port = 3101
+        self.max_port = 3110
         self.parse_the_command_line()
         if H: self.host= H
         if p: self.port= p
@@ -146,8 +150,8 @@ class Client(object):
         # == Set Up UDP Socket ==
         try:
             self.so= socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        except socket.error, emsg:
-            print u'Error: Could not create socket...'
+        except socket.error as emsg:
+            print('Error: Could not create socket...')
             sys.exit(-1)
         # == Initialize Connection To Server ==
         self.so.settimeout(1)
@@ -163,32 +167,38 @@ class Client(object):
 
             try:
                 self.so.sendto(initmsg.encode(), (self.host, self.port))
-            except socket.error, emsg:
+            except socket.error as emsg:
                 sys.exit(-1)
-            sockdata= unicode()
+            sockdata= str()
             try:
                 sockdata,addr= self.so.recvfrom(data_size)
                 sockdata = sockdata.decode(u'utf-8')
-            except socket.error, emsg:
-                print u"Waiting for server on %d............" % self.port
-                print u"Count Down : " + unicode(n_fail)
+            except socket.error as emsg:
+                print("Waiting for server on %d............" % self.port)
+                print("Count Down : " + str(n_fail))
                 if n_fail < 0:
-                    print u"relaunch torcs"
-                    os.system(u'pkill torcs')
-                    time.sleep(1.0)
-                    if self.vision is False:
-                        os.system(u'torcs -nofuel -nodamage -nolaptime &')
+                    # If TORCS server picked a different SCR port (often 3102),
+                    # scan a small port range before forcing a relaunch loop.
+                    if self.port < self.max_port:
+                        self.port += 1
+                        print("Switching client port to %d" % self.port)
                     else:
-                        os.system(u'torcs -nofuel -nodamage -nolaptime -vision &')
-
-                    time.sleep(1.0)
-                    os.system(u'sh autostart.sh')
+                        self.port = self.min_port
+                        print("relaunch torcs")
+                        os.system(u'pkill torcs')
+                        time.sleep(1.0)
+                        if self.vision is False:
+                            os.system(u'torcs -nofuel -nodamage -nolaptime &')
+                        else:
+                            os.system(u'torcs -nofuel -nodamage -nolaptime -vision &')
+                        time.sleep(1.0)
+                        os.system(u'sh autostart.sh')
                     n_fail = 5
                 n_fail -= 1
 
             identify = u'***identified***'
             if identify in sockdata:
-                print u"Client connected on %d.............." % self.port
+                print("Client connected on %d.............." % self.port)
                 break
 
     def parse_the_command_line(self):
@@ -197,13 +207,13 @@ class Client(object):
                        [u'host=',u'port=',u'id=',u'steps=',
                         u'episodes=',u'track=',u'stage=',
                         u'debug',u'help',u'version'])
-        except getopt.error, why:
-            print u'getopt error: %s\n%s' % (why, usage)
+        except getopt.error as why:
+            print('getopt error: %s\n%s' % (why, usage))
             sys.exit(-1)
         try:
             for opt in opts:
                 if opt[0] == u'-h' or opt[0] == u'--help':
-                    print usage
+                    print(usage)
                     sys.exit(0)
                 if opt[0] == u'-d' or opt[0] == u'--debug':
                     self.debug= True
@@ -222,31 +232,31 @@ class Client(object):
                 if opt[0] == u'-m' or opt[0] == u'--steps':
                     self.maxSteps= int(opt[1])
                 if opt[0] == u'-v' or opt[0] == u'--version':
-                    print u'%s %s' % (sys.argv[0], version)
+                    print('%s %s' % (sys.argv[0], version))
                     sys.exit(0)
-        except ValueError, why:
-            print u'Bad parameter \'%s\' for option %s: %s\n%s' % (
-                                       opt[1], opt[0], why, usage)
+        except ValueError as why:
+            print('Bad parameter \'%s\' for option %s: %s\n%s' % (
+                                       opt[1], opt[0], why, usage))
             sys.exit(-1)
         if len(args) > 0:
-            print u'Superflous input? %s\n%s' % (u', '.join(args), usage)
+            print('Superflous input? %s\n%s' % (u', '.join(args), usage))
             sys.exit(-1)
 
     def get_servers_input(self):
         u'''Server's input is stored in a ServerState object'''
         if not self.so: return
-        sockdata= unicode()
+        sockdata= str()
 
         while True:
             try:
                 # Receive server data
                 sockdata,addr= self.so.recvfrom(data_size)
                 sockdata = sockdata.decode(u'utf-8')
-            except socket.error, emsg:
-                print u'.',
+            except socket.error as emsg:
+                print('.', end=' ')
                 #print "Waiting for data on %d.............." % self.port
             if u'***identified***' in sockdata:
-                print u"Client connected on %d.............." % self.port
+                print("Client connected on %d.............." % self.port)
                 continue
             elif u'***shutdown***' in sockdata:
                 print ((u"Server has stopped the race on %d. "+
@@ -256,7 +266,7 @@ class Client(object):
                 return
             elif u'***restart***' in sockdata:
                 # What do I do here?
-                print u"Server has restarted the race on %d." % self.port
+                print("Server has restarted the race on %d." % self.port)
                 # I haven't actually caught the server doing this.
                 self.shutdown()
                 return
@@ -266,7 +276,7 @@ class Client(object):
                 self.S.parse_server_str(sockdata)
                 if self.debug:
                     sys.stderr.write(u"\x1b[2J\x1b[H") # Clear for steady output.
-                    print self.S
+                    print(self.S)
                 break # Can now return from this function.
 
     def respond_to_server(self):
@@ -274,10 +284,10 @@ class Client(object):
         try:
             message = repr(self.R)
             self.so.sendto(message.encode(), (self.host, self.port))
-        except socket.error, emsg:
-            print u"Error sending to server: %s Message %s" % (emsg[1],unicode(emsg[0]))
+        except socket.error as emsg:
+            print("Error sending to server: %s Message %s" % (emsg.args[1] if len(emsg.args) > 1 else emsg, str(emsg.args[0] if emsg.args else emsg)))
             sys.exit(-1)
-        if self.debug: print self.R.fancyout()
+        if self.debug: print(self.R.fancyout())
         # Or use this for plain output:
         #if self.debug: print self.R
 
@@ -520,7 +530,7 @@ def destringify(s):
         try:
             return float(s)
         except ValueError:
-            print u"Could not find a value in %s" % s
+            print("Could not find a value in %s" % s)
             return s
     elif type(s) is list:
         if len(s) < 2:
@@ -569,7 +579,7 @@ def drive_example(c):
 # ================ MAIN ================
 if __name__ == u"__main__":
     C= Client(p=3101)
-    for step in xrange(C.maxSteps,0,-1):
+    for step in range(C.maxSteps,0,-1):
         C.get_servers_input()
         drive_example(C)
         C.respond_to_server()

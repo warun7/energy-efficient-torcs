@@ -1,5 +1,9 @@
-import gym
-from gym import spaces
+try:
+    import gymnasium as gym
+    from gymnasium import spaces
+except ImportError:
+    import gym
+    from gym import spaces
 import numpy as np
 # from os import path
 import snakeoil3_gym as snakeoil3
@@ -7,6 +11,7 @@ import numpy as np
 import copy
 import collections as col
 import os
+import shutil
 import time
 
 
@@ -17,20 +22,110 @@ class TorcsEnv:
 
     initial_reset = True
 
+    @staticmethod
+    def _torcs_bin():
+        # Allow explicit binary override, e.g. /usr/games/torcs
+        return os.environ.get("TORCS_BIN", "torcs")
+
+    @classmethod
+    def _launch_torcs(cls, vision=False):
+        torcs_bin = cls._torcs_bin()
+        if vision:
+            os.system(f"{torcs_bin} -nofuel -nodamage -nolaptime -vision &")
+        else:
+            os.system(f"{torcs_bin} -nofuel -nolaptime &")
+
+    @staticmethod
+    def _ensure_scr_server_user_config():
+        """
+        Some custom TORCS builds don't copy scr_server config into ~/.torcs.
+        Without this file TORCS may crash with GfParmGetNum bad handle.
+        """
+        user_driver_dir = os.path.expanduser("~/.torcs/drivers/scr_server")
+        user_driver_xml = os.path.join(user_driver_dir, "scr_server.xml")
+        if os.path.exists(user_driver_xml):
+            return
+
+        here = os.path.dirname(os.path.abspath(__file__))
+        candidates = [
+            os.path.join(here, "gym_torcs", "vtorcs-RL-color", "src", "drivers", "scr_server", "scr_server.xml"),
+        ]
+        prefix = os.environ.get("TORCS_PREFIX")
+        if prefix:
+            candidates.append(
+                os.path.join(prefix, "share", "games", "torcs", "drivers", "scr_server", "scr_server.xml")
+            )
+        data = os.environ.get("TORCS_DATADIR")
+        if data:
+            candidates.append(os.path.join(data, "drivers", "scr_server", "scr_server.xml"))
+        candidates.append("/usr/local/share/games/torcs/drivers/scr_server/scr_server.xml")
+
+        source_xml = next((p for p in candidates if p and os.path.exists(p)), None)
+        if source_xml is None:
+            return
+        os.makedirs(user_driver_dir, exist_ok=True)
+        shutil.copy2(source_xml, user_driver_xml)
+
+    @staticmethod
+    def _ensure_raceman_practice_config():
+        """
+        Keep ~/.torcs practice race config aligned with this project's
+        known-good SCR setup to avoid TORCS parser/assert crashes.
+        """
+        user_race_dir = os.path.expanduser("~/.torcs/config/raceman")
+        user_practice_xml = os.path.join(user_race_dir, "practice.xml")
+
+        # Prefer the upstream vtorcs raceman config shape (fewer custom sections),
+        # then fall back to local copies.
+        local_candidates = [
+            os.path.join(os.path.dirname(__file__), "gym_torcs", "vtorcs-RL-color", "src", "raceman", "practice.xml"),
+            os.path.join(os.path.dirname(__file__), "gym_torcs", "practice.xml"),
+            os.path.join(os.path.dirname(__file__), "practice.xml"),
+        ]
+        source_xml = next((p for p in local_candidates if os.path.exists(p)), None)
+        if source_xml is None:
+            return
+
+        os.makedirs(user_race_dir, exist_ok=True)
+        shutil.copy2(source_xml, user_practice_xml)
+
+    @staticmethod
+    def _normalize_raceman_driver_block():
+        """
+        Force raceman files to use scr_server with idx=0.
+        Some custom TORCS builds assert if configured idx/module mismatch.
+        """
+        race_dir = os.path.expanduser("~/.torcs/config/raceman")
+        for name in ("practice.xml", "quickrace.xml"):
+            path = os.path.join(race_dir, name)
+            if not os.path.exists(path):
+                continue
+            with open(path, "r", encoding="utf-8") as f:
+                txt = f.read()
+            txt = txt.replace('<attstr name="focused module" val="human"/>', '<attstr name="focused module" val="scr_server"/>')
+            txt = txt.replace('<attstr name="module" val="human"/>', '<attstr name="module" val="scr_server"/>')
+            txt = txt.replace('<attstr name="module" val="chenyi"/>', '<attstr name="module" val="scr_server"/>')
+            txt = txt.replace('<attstr name="module" val="inferno"/>', '<attstr name="module" val="scr_server"/>')
+            txt = txt.replace('<attstr name="module" val="championship2011server"/>', '<attstr name="module" val="scr_server"/>')
+            txt = txt.replace('<attnum name="idx" val="1"/>', '<attnum name="idx" val="0"/>')
+            txt = txt.replace('<attnum name="idx" val="5"/>', '<attnum name="idx" val="0"/>')
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(txt)
+
     def __init__(self, vision=False, throttle=False, gear_change=False):
         self.vision = vision
         self.throttle = throttle
         self.gear_change = gear_change
 
         self.initial_run = True
+        self._ensure_scr_server_user_config()
+        self._ensure_raceman_practice_config()
+        self._normalize_raceman_driver_block()
 
         ##print("launch torcs")
-        os.system('pkill torcs')
+        os.system("pkill -f torcs")
         time.sleep(0.5)
-        if self.vision is True:
-            os.system('torcs -nofuel -nodamage -nolaptime -vision &')
-        else:
-            os.system('torcs -nofuel -nolaptime &')
+        self._launch_torcs(self.vision)
         time.sleep(0.5)
         os.system('sh autostart.sh')
         time.sleep(0.5)
@@ -197,19 +292,16 @@ class TorcsEnv:
         return self.get_obs()
 
     def end(self):
-        os.system('pkill torcs')
+        os.system("pkill -f torcs")
 
     def get_obs(self):
         return self.observation
 
     def reset_torcs(self):
        #print("relaunch torcs")
-        os.system('pkill torcs')
+        os.system("pkill -f torcs")
         time.sleep(0.5)
-        if self.vision is True:
-            os.system('torcs -nofuel -nodamage -nolaptime -vision &')
-        else:
-            os.system('torcs -nofuel -nolaptime &')
+        self._launch_torcs(self.vision)
         time.sleep(0.5)
         os.system('sh autostart.sh')
         time.sleep(0.5)

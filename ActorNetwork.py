@@ -18,7 +18,9 @@ class ActorNetwork(object):
         self.target_model, self.target_weights, self.target_state = self.create_actor_network(state_size, action_size) 
         self.action_gradient = tf.compat.v1.placeholder(tf.float32,[None, action_size])
         self.params_grad = tf.gradients(self.model.output, self.weights, -self.action_gradient)
-        grads = zip(self.params_grad, self.weights)
+        # Clip by global norm to prevent gradient explosion from destabilising actor
+        clipped_grads, _ = tf.clip_by_global_norm(self.params_grad, 1.0)
+        grads = zip(clipped_grads, self.weights)
         self.optimize = tf.compat.v1.train.AdamOptimizer(LEARNING_RATE).apply_gradients(grads)
         self.sess.run(tf.compat.v1.global_variables_initializer())
 

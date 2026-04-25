@@ -141,5 +141,37 @@ log "Evaluation (${EVAL_EPISODES} episodes)..."
     2>&1 | tee "${ARTIFACTS}/log_eval.txt"
 )
 
+# ── Fastest-lap agent ─────────────────────────────────────────────────── #
+LAPTIME_TRAIN_EPISODES="${LAPTIME_TRAIN_EPISODES:-${TRAIN_EPISODES}}"
+LAPTIME_EVAL_EPISODES="${LAPTIME_EVAL_EPISODES:-${EVAL_EPISODES}}"
+
+log "Lap-time agent: training (${LAPTIME_TRAIN_EPISODES} episodes)..."
+(
+  cd "$ROOT"
+  xvfb-run -a -s "-screen 0 1024x768x24" \
+    env TORCS_BIN="$TORCS_BIN" TORCS_PREFIX="$TORCS_PREFIX" TORCS_DATADIR="$TORCS_DATADIR" \
+    "$PY" ddpg_laptime.py \
+      --train 1 \
+      --episodes "$LAPTIME_TRAIN_EPISODES" \
+      --max-steps "$MAX_STEPS" \
+      --artifact-dir "$ARTIFACTS" \
+      --run-tag laptime_train \
+    2>&1 | tee "${ARTIFACTS}/log_laptime_train.txt"
+)
+
+log "Lap-time agent: evaluation (${LAPTIME_EVAL_EPISODES} episodes)..."
+(
+  cd "$ROOT"
+  xvfb-run -a -s "-screen 0 1024x768x24" \
+    env TORCS_BIN="$TORCS_BIN" TORCS_PREFIX="$TORCS_PREFIX" TORCS_DATADIR="$TORCS_DATADIR" \
+    "$PY" ddpg_laptime.py \
+      --train 0 \
+      --episodes "$LAPTIME_EVAL_EPISODES" \
+      --max-steps "$MAX_STEPS" \
+      --artifact-dir "$ARTIFACTS" \
+      --run-tag laptime_eval \
+    2>&1 | tee "${ARTIFACTS}/log_laptime_eval.txt"
+)
+
 log "Done. Artifacts under ${ARTIFACTS}/"
 ls -la "$ARTIFACTS"

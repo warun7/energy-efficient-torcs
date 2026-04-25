@@ -107,8 +107,12 @@ class TorcsEnv:
             txt = txt.replace('<attstr name="module" val="chenyi"/>', '<attstr name="module" val="scr_server"/>')
             txt = txt.replace('<attstr name="module" val="inferno"/>', '<attstr name="module" val="scr_server"/>')
             txt = txt.replace('<attstr name="module" val="championship2011server"/>', '<attstr name="module" val="scr_server"/>')
+            # Fix driver idx values
             txt = txt.replace('<attnum name="idx" val="1"/>', '<attnum name="idx" val="0"/>')
             txt = txt.replace('<attnum name="idx" val="5"/>', '<attnum name="idx" val="0"/>')
+            # Fix focused idx (separate attribute name)
+            txt = txt.replace('<attnum name="focused idx" val="1"/>', '<attnum name="focused idx" val="0"/>')
+            txt = txt.replace('<attnum name="focused idx" val="5"/>', '<attnum name="focused idx" val="0"/>')
             with open(path, "w", encoding="utf-8") as f:
                 f.write(txt)
 

@@ -202,8 +202,66 @@ class Client(object):
                 break
 
     def parse_the_command_line(self):
+        # Filter sys.argv to only the args snakeoil understands so that
+        # argparse-style arguments passed to the parent script (e.g.
+        # --train, --artifact-dir) don't trigger a getopt error /
+        # sys.exit(-1).
+        # Long opts that take a value argument (must keep next token too).
+        known_val   = {u'host', u'port', u'id', u'steps',
+                       u'episodes', u'track', u'stage'}
+        # Long opts that are flags (no value token follows).
+        known_flag  = {u'debug', u'help', u'version'}
+        known_short_val  = set(u'Hpimets')   # short opts that take a value
+        known_short_flag = set(u'dhv')
+
+        filtered = []
+        tokens = sys.argv[1:]
+        i = 0
+        while i < len(tokens):
+            tok = tokens[i]
+            if tok.startswith(u'--'):
+                if u'=' in tok:
+                    key = tok[2:].split(u'=')[0]
+                    if key in known_val or key in known_flag:
+                        filtered.append(tok)
+                    # else: unknown --key=val, drop silently
+                    i += 1
+                else:
+                    key = tok[2:]
+                    if key in known_val:
+                        filtered.append(tok)
+                        if i + 1 < len(tokens):
+                            filtered.append(tokens[i + 1])
+                            i += 2
+                        else:
+                            i += 1
+                    elif key in known_flag:
+                        filtered.append(tok)
+                        i += 1
+                    else:
+                        # Unknown long flag, skip it (and its value if any)
+                        i += 1
+                        if i < len(tokens) and not tokens[i].startswith(u'-'):
+                            i += 1
+            elif tok.startswith(u'-') and len(tok) == 2:
+                ch = tok[1]
+                if ch in known_short_val:
+                    filtered.append(tok)
+                    if i + 1 < len(tokens):
+                        filtered.append(tokens[i + 1])
+                        i += 2
+                    else:
+                        i += 1
+                elif ch in known_short_flag:
+                    filtered.append(tok)
+                    i += 1
+                else:
+                    i += 1   # unknown short opt, skip
+            else:
+                i += 1       # bare positional arg, skip
+
         try:
-            (opts, args) = getopt.getopt(sys.argv[1:], u'H:p:i:m:e:t:s:dhv',
+            (opts, args) = getopt.getopt(filtered, u'H:p:i:m:e:t:s:dhv',
                        [u'host=',u'port=',u'id=',u'steps=',
                         u'episodes=',u'track=',u'stage=',
                         u'debug',u'help',u'version'])
@@ -242,42 +300,53 @@ class Client(object):
             print('Superflous input? %s\n%s' % (u', '.join(args), usage))
             sys.exit(-1)
 
-    def get_servers_input(self):
-        u'''Server's input is stored in a ServerState object'''
+    def get_servers_input(self, max_timeouts=400):
+        u'''Server's input is stored in a ServerState object.
+        Raises TimeoutError if no sensor data arrives within max_timeouts
+        socket-timeout cycles (~40 s at the default 100 ms per cycle).
+        Set max_timeouts=0 to disable the limit (wait forever).
+        '''
         if not self.so: return
-        sockdata= str()
+        sockdata = str()
+        timeout_count = 0
 
         while True:
             try:
-                # Receive server data
-                sockdata,addr= self.so.recvfrom(data_size)
+                sockdata, addr = self.so.recvfrom(data_size)
                 sockdata = sockdata.decode(u'utf-8')
-            except socket.error as emsg:
-                print('.', end=' ')
-                #print "Waiting for data on %d.............." % self.port
+                timeout_count = 0   # reset on any successful recv
+            except socket.error:
+                timeout_count += 1
+                if max_timeouts and timeout_count > max_timeouts:
+                    raise TimeoutError(
+                        "TORCS not responding on port %d after %d timeouts "
+                        "(~%.0f s). Race probably didn't start."
+                        % (self.port, max_timeouts, max_timeouts * 0.1))
+                print('.', end=' ', flush=True)
+                continue
+
             if u'***identified***' in sockdata:
                 print("Client connected on %d.............." % self.port)
+                timeout_count = 0
                 continue
             elif u'***shutdown***' in sockdata:
-                print ((u"Server has stopped the race on %d. "+
-                        u"You were in %d place.") %
-                        (self.port,self.S.d[u'racePos']))
+                print((u"Server has stopped the race on %d. "
+                       u"You were in %d place.") %
+                       (self.port, self.S.d[u'racePos']))
                 self.shutdown()
                 return
             elif u'***restart***' in sockdata:
-                # What do I do here?
                 print("Server has restarted the race on %d." % self.port)
-                # I haven't actually caught the server doing this.
                 self.shutdown()
                 return
-            elif not sockdata: # Empty?
-                continue       # Try again.
+            elif not sockdata:
+                continue
             else:
                 self.S.parse_server_str(sockdata)
                 if self.debug:
-                    sys.stderr.write(u"\x1b[2J\x1b[H") # Clear for steady output.
+                    sys.stderr.write(u"\x1b[2J\x1b[H")
                     print(self.S)
-                break # Can now return from this function.
+                break
 
     def respond_to_server(self):
         if not self.so: return

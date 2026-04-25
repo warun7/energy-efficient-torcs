@@ -1,7 +1,7 @@
 import tensorflow as tf
 from tf_keras import Model
 from tf_keras.layers import Add, Dense, Input
-from tf_keras.optimizers import Adam
+from tf_keras.optimizers.legacy import Adam
 
 HIDDEN1_UNITS = 300
 HIDDEN2_UNITS = 600
@@ -44,6 +44,7 @@ class CriticNetwork(object):
         h3 = Dense(HIDDEN2_UNITS, activation='relu')(h2)
         V = Dense(action_dim,activation='linear')(h3)   
         model = Model(inputs=[S, A], outputs=V)
-        adam = Adam(learning_rate=self.LEARNING_RATE)
+        # clipnorm=1.0 prevents a single bad batch from exploding critic weights
+        adam = Adam(learning_rate=self.LEARNING_RATE, clipnorm=1.0)
         model.compile(loss='mse', optimizer=adam)
         return model, A, S 

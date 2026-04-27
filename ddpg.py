@@ -18,7 +18,7 @@ import timeit
 
 OU = OU()       #Ornstein-Uhlenbeck Process
 
-def playGame(train_indicator=0, episode_count=2000, max_steps=100000, artifact_dir=".", run_tag="run"):    #1 means Train, 0 means simply Run
+def playGame(train_indicator=1, episode_count=2000, max_steps=100000, artifact_dir=".", run_tag="run"):    #1 means Train, 0 means simply Run
     artifact_dir = os.path.abspath(artifact_dir)
     os.makedirs(artifact_dir, exist_ok=True)
     BUFFER_SIZE = 100000
@@ -65,15 +65,15 @@ def playGame(train_indicator=0, episode_count=2000, max_steps=100000, artifact_d
     critic_weights = os.path.join(artifact_dir, "criticmodel.h5")
 
     #Now load the weight
-    print("Now we load the weight")
+    print(f"Loading weights from {artifact_dir}...")
     try:
         actor.model.load_weights(actor_weights)
         critic.model.load_weights(critic_weights)
         actor.target_model.load_weights(actor_weights)
         critic.target_model.load_weights(critic_weights)
-        print("Weight load successfully")
-    except Exception:
-        print("Cannot find the weight")
+        print("Weights loaded successfully.")
+    except Exception as e:
+        print(f"Failed to load weights: {e}")
 
     print("TORCS Experiment Start.")
     episode_stats = []
@@ -81,10 +81,8 @@ def playGame(train_indicator=0, episode_count=2000, max_steps=100000, artifact_d
 
         print("Episode : " + str(i) + " Replay Buffer " + str(buff.count()))
 
-        if np.mod(i, 3) == 0:
-            ob = env.reset(relaunch=True)   #relaunch TORCS every 3 episode because of the memory leak error
-        else:
-            ob = env.reset()
+        # Relaunch TORCS every episode for reliability with the autostart script
+        ob = env.reset(relaunch=True)
 
         s_t = np.hstack((ob.angle, ob.track, ob.trackPos, ob.speedX, ob.speedY,  ob.speedZ, ob.wheelSpinVel/100.0, ob.rpm))
      
@@ -150,16 +148,16 @@ def playGame(train_indicator=0, episode_count=2000, max_steps=100000, artifact_d
             if done:
                 break
 
-        if np.mod(i, 3) == 0:
-            if (train_indicator):
-                print("Now we save model")
-                actor.model.save_weights(actor_weights, overwrite=True)
-                with open(os.path.join(artifact_dir, "actormodel.json"), "w") as outfile:
-                    json.dump(actor.model.to_json(), outfile)
+        # Save the model every episode instead of every 3rd
+        if (train_indicator):
+            print(f"Saving weights to {artifact_dir}...")
+            actor.model.save_weights(actor_weights, overwrite=True)
+            with open(os.path.join(artifact_dir, "actormodel.json"), "w") as outfile:
+                json.dump(actor.model.to_json(), outfile)
 
-                critic.model.save_weights(critic_weights, overwrite=True)
-                with open(os.path.join(artifact_dir, "criticmodel.json"), "w") as outfile:
-                    json.dump(critic.model.to_json(), outfile)
+            critic.model.save_weights(critic_weights, overwrite=True)
+            with open(os.path.join(artifact_dir, "criticmodel.json"), "w") as outfile:
+                json.dump(critic.model.to_json(), outfile)
 
         print("TOTAL REWARD @ " + str(i) +"-th Episode  : Reward " + str(total_reward))
         print("Total Step: " + str(step))
@@ -195,7 +193,7 @@ def playGame(train_indicator=0, episode_count=2000, max_steps=100000, artifact_d
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="DDPG agent for TORCS")
-    parser.add_argument("--train", type=int, default=0, choices=[0, 1], help="1=train, 0=evaluate")
+    parser.add_argument("--train", type=int, default=1, choices=[0, 1], help="1=train, 0=evaluate")
     parser.add_argument("--episodes", type=int, default=2000, help="Number of episodes")
     parser.add_argument("--max-steps", type=int, default=100000, dest="max_steps", help="Max steps per episode")
     parser.add_argument("--artifact-dir", type=str, default=".", help="Directory for weights, logs, plots")

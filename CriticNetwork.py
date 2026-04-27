@@ -1,7 +1,7 @@
 import tensorflow as tf
 from tf_keras import Model
 from tf_keras.layers import Add, Dense, Input
-from tf_keras.optimizers import Adam
+from tf_keras.optimizers.legacy import Adam
 
 HIDDEN1_UNITS = 300
 HIDDEN2_UNITS = 600

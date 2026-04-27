@@ -177,22 +177,7 @@ class Client(object):
                 print("Waiting for server on %d............" % self.port)
                 print("Count Down : " + str(n_fail))
                 if n_fail < 0:
-                    # If TORCS server picked a different SCR port (often 3102),
-                    # scan a small port range before forcing a relaunch loop.
-                    if self.port < self.max_port:
-                        self.port += 1
-                        print("Switching client port to %d" % self.port)
-                    else:
-                        self.port = self.min_port
-                        print("relaunch torcs")
-                        os.system(u'pkill torcs')
-                        time.sleep(1.0)
-                        if self.vision is False:
-                            os.system(u'torcs -nofuel -nodamage -nolaptime &')
-                        else:
-                            os.system(u'torcs -nofuel -nodamage -nolaptime -vision &')
-                        time.sleep(1.0)
-                        os.system(u'sh autostart.sh')
+                    print("Still waiting on port %d, retrying..." % self.port)
                     n_fail = 5
                 n_fail -= 1
 
@@ -202,8 +187,34 @@ class Client(object):
                 break
 
     def parse_the_command_line(self):
+        # ddpg.py uses argparse flags like --train/--artifact-dir which are not
+        # TORCS client options. Filter argv so getopt only sees TORCS options.
+        known_with_value = {
+            u'-H', u'--host', u'-p', u'--port', u'-i', u'--id',
+            u'-m', u'--steps', u'-e', u'--episodes', u'-t', u'--track',
+            u'-s', u'--stage'
+        }
+        known_no_value = {u'-d', u'--debug', u'-h', u'--help', u'-v', u'--version'}
+        filtered_argv = []
+        i = 1
+        argv = sys.argv
+        while i < len(argv):
+            tok = argv[i]
+            if tok in known_with_value:
+                filtered_argv.append(tok)
+                if i + 1 < len(argv):
+                    filtered_argv.append(argv[i + 1])
+                    i += 2
+                    continue
+                i += 1
+                continue
+            if tok in known_no_value:
+                filtered_argv.append(tok)
+                i += 1
+                continue
+            i += 1
         try:
-            (opts, args) = getopt.getopt(sys.argv[1:], u'H:p:i:m:e:t:s:dhv',
+            (opts, args) = getopt.getopt(filtered_argv, u'H:p:i:m:e:t:s:dhv',
                        [u'host=',u'port=',u'id=',u'steps=',
                         u'episodes=',u'track=',u'stage=',
                         u'debug',u'help',u'version'])

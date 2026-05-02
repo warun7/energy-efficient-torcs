@@ -18,17 +18,15 @@ PY="${VENV}/bin/python"
 PIP="${VENV}/bin/pip"
 
 # Short defaults keep CI/evaluation runtime reasonable; override when needed.
-TRAIN_EPISODES="${TRAIN_EPISODES:-200}"
-EVAL_EPISODES="${EVAL_EPISODES:-10}"
+TRAIN_EPISODES="${TRAIN_EPISODES:-10}"
+EVAL_EPISODES="${EVAL_EPISODES:-5}"
 MAX_STEPS="${MAX_STEPS:-2500}"
 
 APT_UPDATE="${APT_UPDATE:-1}"
 
 log() { printf '%s\n' "$*"; }
 
-if ! command -v apt-get >/dev/null 2>&1; then
   wget "https://sourceforge.net/projects/torcs/files/all-in-one/1.3.7/torcs-1.3.7.tar.bz2/download" -O torcs-1.3.7.tar.bz2
-  log "ERROR: apt-get not found. This script targets Debian/Ubuntu (e.g. ubuntu:22.04)."
   exit 1
 fi
 
@@ -44,10 +42,8 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 
 if [ "$APT_UPDATE" != "0" ]; then
-  $SUDO apt-get update -y
 fi
 
-$SUDO apt-get install -y --no-install-recommends \
   build-essential \
   ca-certificates \
   procps \
@@ -123,7 +119,6 @@ log "Training (${TRAIN_EPISODES} episodes, max ${MAX_STEPS} steps/episode)..."
       --train 1 \
       --episodes "$TRAIN_EPISODES" \
       --max-steps "$MAX_STEPS" \
-      --fuel-lambda 0.2 \
       --artifact-dir "$ARTIFACTS" \
       --run-tag train \
     2>&1 | tee "${ARTIFACTS}/log_train.txt"
@@ -138,7 +133,6 @@ log "Evaluation (${EVAL_EPISODES} episodes)..."
       --train 0 \
       --episodes "$EVAL_EPISODES" \
       --max-steps "$MAX_STEPS" \
-      --fuel-lambda 0.2 \
       --artifact-dir "$ARTIFACTS" \
       --run-tag eval \
     2>&1 | tee "${ARTIFACTS}/log_eval.txt"

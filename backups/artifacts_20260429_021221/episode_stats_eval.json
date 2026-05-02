@@ -1,0 +1,31 @@
+[
+  {
+    "episode": 1,
+    "train": 0,
+    "run_tag": "eval",
+    "reward_total": -109.05705512485302,
+    "steps_taken": 22,
+    "finished": false,
+    "dnf": true,
+    "lap_count": 0,
+    "lap_time_sec": null,
+    "termination_reason": "off_track",
+    "fuel_lambda": 0.0,
+    "fuel_current": 93.9489,
+    "fuel_consumed": 0.05110000000000525,
+    "fuel_penalty_last": 0.0,
+    "fuel_penalty_sum": 0.0,
+    "fuel_rate_avg_last": 0.002555000000000263,
+    "fuel_budget_rate_target": 0.002,
+    "fuel_over_consumption_last": 0.0005550000000002627,
+    "fuel_over_consumption_max": 0.0005550000000002627,
+    "fuel_budget_remaining_last": 5.0,
+    "fuel_budget_remaining_min": 5.0,
+    "track_progress_last": 0.9705344739343422,
+    "peak_speed_kmh": 72.9907,
+    "final_speed_kmh": 72.9907,
+    "max_fuel_penalty": 0.0,
+    "replay_size": 0,
+    "best_reward_so_far": -109.05705512485302
+  }
+]

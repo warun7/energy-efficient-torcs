@@ -40,7 +40,8 @@ def flatten_state(obs):
         obs.rpm,
         obs.fuelLevel,
         obs.fuelConsumed,
-        obs.fuelBudgetRemaining
+        obs.fuelBudgetRemaining,
+        obs.b_t
     ))
     return np.array(features, dtype=np.float32)
 
@@ -78,8 +79,12 @@ class Actor(nn.Module):
         x_t = dist.rsample()
         y_t = torch.tanh(x_t)
         action = y_t
+        # Stable log_prob calculation to prevent gradient explosion:
+        # log(1 - tanh(x)^2) = 2 * (log(2) - x - softplus(-2x))
+        # log_prob -= torch.log(1 - action.pow(2) + 1e-6)  <-- numerically unstable
+        import math
         log_prob = dist.log_prob(x_t)
-        log_prob -= torch.log(1 - action.pow(2) + 1e-6)
+        log_prob -= (2 * (math.log(2) - x_t - F.softplus(-2 * x_t)))
         log_prob = log_prob.sum(1, keepdim=True)
         
         # Scaling actions: Steer [-1,1], Accel [0,1], Brake [0,1]
@@ -130,16 +135,16 @@ class Critic(nn.Module):
 class SAC:
     def __init__(self, state_dim, action_dim):
         self.actor = Actor(state_dim, action_dim).to(device)
-        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=1e-4)
+        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=3e-5)
 
         self.critic = Critic(state_dim, action_dim).to(device)
         self.critic_target = Critic(state_dim, action_dim).to(device)
         self.critic_target.load_state_dict(self.critic.state_dict())
-        self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=1e-3)
+        self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=3e-5)
 
         self.target_entropy = -4.0  # Fix 4: lower than -action_dim (-3.0) for more deterministic racing policy
         self.log_alpha = torch.zeros(1, requires_grad=True, device=device)
-        self.alpha_optim = optim.Adam([self.log_alpha], lr=1e-4)
+        self.alpha_optim = optim.Adam([self.log_alpha], lr=3e-5)
 
         self.gamma = 0.99
         self.tau = 0.001
@@ -175,6 +180,7 @@ class SAC:
 
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.critic.parameters(), 1.0)
         self.critic_optimizer.step()
 
         pi, log_prob, _ = self.actor.sample(state)
@@ -185,6 +191,7 @@ class SAC:
 
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)
         self.actor_optimizer.step()
 
         alpha_loss = -(self.log_alpha * (log_prob + self.target_entropy).detach()).mean()
@@ -202,11 +209,37 @@ class SAC:
         torch.save(self.log_alpha.detach().cpu(), filename + "_log_alpha.pth")
         
     def load(self, filename):
-        self.actor.load_state_dict(torch.load(filename + "_actor.pth", map_location=device))
-        self.critic.load_state_dict(torch.load(filename + "_critic.pth", map_location=device))
+        # Helper to load and reshape weights if state dimension changed (e.g., 32 to 33)
+        def _load_and_reshape(model, path, is_critic=False):
+            if not os.path.exists(path): return
+            old_dict = torch.load(path, map_location=device)
+            new_dict = model.state_dict()
+            for key in old_dict:
+                if 'fc1.weight' in key or (is_critic and 'fc4.weight' in key):
+                    if old_dict[key].shape[1] == 32 and new_dict[key].shape[1] == 33: # Actor
+                        new_dict[key][:, :32] = old_dict[key]
+                        new_dict[key][:, 32:] = torch.randn(new_dict[key].shape[0], 1) * 0.01
+                    elif old_dict[key].shape[1] == 35 and new_dict[key].shape[1] == 36: # Critic
+                        new_dict[key][:, :32] = old_dict[key][:, :32]
+                        new_dict[key][:, 32:33] = torch.randn(new_dict[key].shape[0], 1) * 0.01
+                        new_dict[key][:, 33:] = old_dict[key][:, 32:]
+                    else:
+                        new_dict[key] = old_dict[key]
+                elif 'bn0' in key or (is_critic and ('bn1' in key or 'bn2' in key)):
+                    if len(old_dict[key].shape) > 0 and old_dict[key].shape[0] == 32 and new_dict[key].shape[0] == 33:
+                        new_dict[key][:32] = old_dict[key]
+                    else:
+                        new_dict[key] = old_dict[key]
+                else:
+                    new_dict[key] = old_dict[key]
+            model.load_state_dict(new_dict)
+
+        _load_and_reshape(self.actor, filename + "_actor.pth", is_critic=False)
+        _load_and_reshape(self.critic, filename + "_critic.pth", is_critic=True)
+        
         critic_target_path = filename + "_critic_target.pth"
         if os.path.exists(critic_target_path):
-            self.critic_target.load_state_dict(torch.load(critic_target_path, map_location=device))
+            _load_and_reshape(self.critic_target, critic_target_path, is_critic=True)
         else:
             self.critic_target.load_state_dict(self.critic.state_dict())
 
@@ -224,7 +257,7 @@ def main():
     parser.add_argument("--run-tag", type=str, default="sac")
     parser.add_argument("--model-prefix", type=str, default="sac_best_model")
     parser.add_argument("--resume", type=int, default=1)
-    parser.add_argument("--fuel-lambda", type=float, default=0.0)
+    parser.add_argument("--fuel-lambda", type=float, default=0.3)
     args = parser.parse_args()
 
     os.makedirs(args.artifact_dir, exist_ok=True)
@@ -236,7 +269,7 @@ def main():
         max_laps=1,
     )
     
-    state_dim = 32
+    state_dim = 33
     action_dim = 3
 
     agent = SAC(state_dim, action_dim)
@@ -255,15 +288,28 @@ def main():
         print(f"No trained model found at {model_path}, running with random weights.")
     elif checkpoint_exists and not args.resume:
         print(f"Checkpoint exists at {model_path}, but resume is disabled. Starting fresh.")
+    
+    # Warm-start logic relies on replay buffer being empty initially
+    # ReplayBuffer is already empty on init, so we just don't load any old replays here.
 
     for ep in range(args.episodes):
-        obs = env.reset(relaunch=True)
+        # Biased budget sampling: 40% tight, 40% mid, 20% loose
+        # Loose ceiling tightened from 8.0 → 6.5 so agent can't farm easy wins on huge budgets
+        r = np.random.random()
+        if r < 0.40:
+            budget = float(np.random.uniform(3.0, 4.5))   # tight: physically hard, needs coasting
+        elif r < 0.80:
+            budget = float(np.random.uniform(4.5, 5.5))   # mid: tight but completable with care
+        else:
+            budget = float(np.random.uniform(5.5, 6.5))   # loose: comfortable margin
+        obs = env.reset(relaunch=True, budget=budget)
+        print(f"\n--- Starting Episode {ep+1} | Budget: {env.total_fuel_budget:.2f} ({'tight' if budget < 4.5 else 'mid' if budget < 6.5 else 'loose'}) ---")
         state = flatten_state(obs)
         ep_reward = 0
         episode_last_info = None
         peak_speed_kmh = 0.0
         fuel_penalty_sum = 0.0
-        max_fuel_penalty = 0.0
+        worst_fuel_penalty = 0.0   # most negative value seen (tracks worst overconsumption step)
         max_fuel_over_consumption = 0.0
         min_fuel_budget_remaining = float("inf")
         
@@ -298,7 +344,7 @@ def main():
             peak_speed_kmh = max(peak_speed_kmh, float(info.get("speedX_kmh", 0.0)))
             fuel_penalty = float(info.get("fuel_penalty", 0.0))
             fuel_penalty_sum += fuel_penalty
-            max_fuel_penalty = max(max_fuel_penalty, fuel_penalty)
+            worst_fuel_penalty = min(worst_fuel_penalty, fuel_penalty)  # most negative = worst step
             max_fuel_over_consumption = max(
                 max_fuel_over_consumption,
                 float(info.get("fuel_over_consumption", 0.0)),
@@ -319,6 +365,7 @@ def main():
                 "lap_time_sec": None,
                 "termination_reason": None,
                 "fuel_lambda": float(args.fuel_lambda),
+                "fuel_budget": 0.0,
                 "fuel_current": 0.0,
                 "fuel_consumed": 0.0,
                 "fuel_penalty": 0.0,
@@ -352,6 +399,7 @@ def main():
             ),
             "termination_reason": termination_reason,
             "fuel_lambda": float(episode_last_info.get("fuel_lambda", args.fuel_lambda)),
+            "fuel_budget": float(episode_last_info.get("fuel_budget", 0.0)),
             "fuel_current": float(episode_last_info.get("fuel_current", 0.0)),
             "fuel_consumed": float(episode_last_info.get("fuel_consumed", 0.0)),
             "fuel_penalty_last": float(episode_last_info.get("fuel_penalty", 0.0)),
@@ -367,7 +415,8 @@ def main():
             "track_progress_last": float(episode_last_info.get("track_progress", 0.0)),
             "peak_speed_kmh": float(peak_speed_kmh),
             "final_speed_kmh": float(episode_last_info.get("speedX_kmh", 0.0)),
-            "max_fuel_penalty": float(max_fuel_penalty),
+            "max_fuel_penalty": float(abs(worst_fuel_penalty)),  # absolute magnitude of worst step penalty
+            "worst_fuel_penalty_raw": float(worst_fuel_penalty),  # raw (negative) for debugging
             "replay_size": int(len(replay_buffer)),
             "best_reward_so_far": float(max(best_reward, ep_reward)),
         }
@@ -386,8 +435,15 @@ def main():
             f"[{args.run_tag}] Episode: {ep+1}/{args.episodes} | {status} | "
             f"Reward: {ep_reward:.2f} | Steps: {steps_taken} | "
             f"Lap: {lap_time_str} | Reason: {termination_reason} | "
-            f"FuelLambda: {episode_summary['fuel_lambda']:.3f}"
+            f"Budget: {episode_summary.get('fuel_budget', 0.0):.2f}"
         )
+        
+        # Verify b_t neuron is receiving signal
+        if (ep + 1) % 10 == 0 and agent.actor.fc1.weight.grad is not None:
+            bt_grad = agent.actor.fc1.weight.grad[:, 32].abs().mean().item()
+            old_grad = agent.actor.fc1.weight.grad[:, :32].abs().mean().item()
+            ratio = bt_grad / old_grad if old_grad > 0 else 0.0
+            print(f"b_t gradient ratio: {ratio:.4f} (bt_grad: {bt_grad:.6f}, old_grad: {old_grad:.6f})")
         
         if args.train and ep_reward > best_reward:
             best_reward = ep_reward

@@ -1,0 +1,116 @@
+[
+  {
+    "budget": 2.5,
+    "completion_rate": 0.0,
+    "mean_lap_time": null,
+    "std_lap_time": null,
+    "mean_energy_used": 1.6811500000000095,
+    "violation_rate": 0.0,
+    "mean_progress_dnf": 0.2153627488330389,
+    "termination_reasons": {
+      "lap_complete": 0,
+      "fuel_exhaustion": 0,
+      "off_track": 10,
+      "spin_out": 0,
+      "stuck": 0,
+      "timeout": 0,
+      "backward": 0,
+      "unknown": 0
+    }
+  },
+  {
+    "budget": 4.0,
+    "completion_rate": 0.0,
+    "mean_lap_time": null,
+    "std_lap_time": null,
+    "mean_energy_used": 4.001999999999981,
+    "violation_rate": 1.0,
+    "mean_progress_dnf": 0.8619080053720614,
+    "termination_reasons": {
+      "lap_complete": 0,
+      "fuel_exhaustion": 10,
+      "off_track": 0,
+      "spin_out": 0,
+      "stuck": 0,
+      "timeout": 0,
+      "backward": 0,
+      "unknown": 0
+    }
+  },
+  {
+    "budget": 5.0,
+    "completion_rate": 1.0,
+    "mean_lap_time": 123.162,
+    "std_lap_time": null,
+    "mean_energy_used": 4.5120000000000005,
+    "violation_rate": 0.0,
+    "mean_progress_dnf": 1.0,
+    "termination_reasons": {
+      "lap_complete": 10,
+      "fuel_exhaustion": 0,
+      "off_track": 0,
+      "spin_out": 0,
+      "stuck": 0,
+      "timeout": 0,
+      "backward": 0,
+      "unknown": 0
+    }
+  },
+  {
+    "budget": 6.5,
+    "completion_rate": 1.0,
+    "mean_lap_time": 122.646,
+    "std_lap_time": null,
+    "mean_energy_used": 4.395000000000024,
+    "violation_rate": 0.0,
+    "mean_progress_dnf": 1.0,
+    "termination_reasons": {
+      "lap_complete": 10,
+      "fuel_exhaustion": 0,
+      "off_track": 0,
+      "spin_out": 0,
+      "stuck": 0,
+      "timeout": 0,
+      "backward": 0,
+      "unknown": 0
+    }
+  },
+  {
+    "budget": 8.0,
+    "completion_rate": 1.0,
+    "mean_lap_time": 124.35799999999999,
+    "std_lap_time": 1.4210854715202004e-14,
+    "mean_energy_used": 4.305000000000021,
+    "violation_rate": 0.0,
+    "mean_progress_dnf": 1.0,
+    "termination_reasons": {
+      "lap_complete": 10,
+      "fuel_exhaustion": 0,
+      "off_track": 0,
+      "spin_out": 0,
+      "stuck": 0,
+      "timeout": 0,
+      "backward": 0,
+      "unknown": 0
+    }
+  },
+  {
+    "budget": 10.0,
+    "completion_rate": 1.0,
+    "mean_lap_time": 126.03600000000002,
+    "std_lap_time": 1.4210854715202004e-14,
+    "mean_energy_used": 4.247999999999976,
+    "violation_rate": 0.0,
+    "mean_progress_dnf": 1.0,
+    "termination_reasons": {
+      "lap_complete": 10,
+      "fuel_exhaustion": 0,
+      "off_track": 0,
+      "spin_out": 0,
+      "stuck": 0,
+      "timeout": 0,
+      "backward": 0,
+      "unknown": 0
+    }
+  }
+]

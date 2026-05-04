@@ -1,9 +1,11 @@
-# TORCS DDPG Autonomous Racing Specification
+# TORCS DDPG Autonomous Racing Specification (Unconstrained Baseline)
 
 ## 1. Problem Definition
-The objective is to train a Deep Reinforcement Learning agent using the **Deep Deterministic Policy Gradient (DDPG)** algorithm to autonomously drive a race car in the **TORCS (The Open Racing Car Simulator)** environment. 
+The objective of this baseline is to train a Deep Reinforcement Learning agent using the **Deep Deterministic Policy Gradient (DDPG)** algorithm to autonomously drive a race car in the **TORCS (The Open Racing Car Simulator)** environment. 
 
-Specifically, we are optimizing for performance on the **alpine-1** track. The agent must learn to:
+This model serves as the **unconstrained pace baseline** for our Formula E style energy-management research. Unlike the budget-conditioned SAC agent, this DDPG agent has no explicit awareness of fuel constraints and optimizes purely for lap time and forward progress.
+
+The agent must learn to:
 - Maximize forward velocity and progress along the track.
 - Minimize lap times through optimal racing lines and throttle management.
 - Avoid collisions with walls and track boundaries.
@@ -99,4 +101,3 @@ The Critic estimates the Q-value (expected future reward) for a given State-Acti
 | **Learning Rate (Actor)** | 0.0001 | Optimizer step size for the Actor. |
 | **Learning Rate (Critic)** | 0.001 | Optimizer step size for the Critic. |
 | **Exploration (Steps)** | 100,000 | Total steps over which noise decays. |
-

@@ -1,0 +1,21 @@
+/workspace/.venv/lib/python3.10/site-packages/gymnasium/spaces/box.py:231: UserWarning: [33mWARN: Box low's precision lowered by casting to float32, current low.dtype=float64[0m
+  gym.logger.warn(
+/workspace/.venv/lib/python3.10/site-packages/gymnasium/spaces/box.py:297: UserWarning: [33mWARN: Box high's precision lowered by casting to float32, current high.dtype=float64[0m
+  gym.logger.warn(
+Saving /root/.torcs/config/graph.xml to /root/.torcs/config/graph.xml.old
+Loaded model checkpoint from /workspace/artifacts/sac_best_model
+Client connected on 3101..............
+
+--- Starting Episode 1 | Budget: 3.97 (tight) ---
+Scaled step fuel: 0.001000, target rate: 0.003971
+>>> OFF TRACK TERMINATION <<<
+[train] Episode: 1/2 | DNF | Reward: 367.90 | Steps: 62 | Lap: n/a | Reason: off_track | Budget: 3.97
+Saved new best model with reward: 367.90
+Race terminated or 100000 steps elapsed. Shutting down 3101.
+### TORCS is RELAUNCHED ###
+Client connected on 3101..............
+
+--- Starting Episode 2 | Budget: 4.80 (mid) ---
+>>> OFF TRACK TERMINATION <<<
+[train] Episode: 2/2 | DNF | Reward: 510.23 | Steps: 69 | Lap: n/a | Reason: off_track | Budget: 4.80
+Saved new best model with reward: 510.23

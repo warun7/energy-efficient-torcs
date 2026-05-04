@@ -62,7 +62,7 @@ $SUDO apt-get install -y --no-install-recommends \
   freeglut3-dev \
   libplib-dev \
   libopenal-dev \
-  libfreealut-dev \
+  libalut-dev \
   libpng-dev \
   zlib1g-dev \
   libx11-dev \
@@ -90,10 +90,16 @@ if [ ! -f "$STAMP" ]; then
   fi
   (
     cd "$TORCS_SRC"
+    find . -name ".depend" -delete
+    # Wipe any host-compiled .o/.so artifacts so make does a full in-container build.
+    make -k clean 2>/dev/null || true
     ./configure --prefix="$TORCS_INST"
     make -j1
     make install
+    make datainstall
   )
+  # Disable sound for headless docker execution to prevent ALSA crashes
+  sed -i 's/val="openal"/val="disabled"/g' "$TORCS_INST/share/games/torcs/config/sound.xml"
   touch "$STAMP"
 fi
 
@@ -103,7 +109,9 @@ if [ ! -x "${TORCS_INST}/bin/torcs" ]; then
 fi
 
 log "Creating Python venv..."
-if [ ! -x "$PY" ]; then
+if [ ! -x "$PY" ] || ! "$PY" --version >/dev/null 2>&1 || ! "$PIP" --version >/dev/null 2>&1; then
+  log "Recreating venv (existing interpreter missing or broken)..."
+  rm -rf "$VENV"
   python3 -m venv "$VENV"
 fi
 "$PIP" install --upgrade pip

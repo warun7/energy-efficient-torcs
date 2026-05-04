@@ -23,11 +23,40 @@ EVAL_EPISODES="${EVAL_EPISODES:-10}"
 MAX_STEPS="${MAX_STEPS:-2500}"
 
 APT_UPDATE="${APT_UPDATE:-1}"
+APT_RETRIES="${APT_RETRIES:-5}"
 
 log() { printf '%s\n' "$*"; }
 
+apt_get() {
+  $SUDO apt-get \
+    -o Acquire::ForceIPv4=true \
+    -o Acquire::Retries="${APT_RETRIES}" \
+    -o Acquire::http::No-Cache=true \
+    "$@"
+}
+
+apt_update_with_retries() {
+  local attempt
+
+  for attempt in $(seq 1 "$APT_RETRIES"); do
+    log "Running apt-get update (attempt ${attempt}/${APT_RETRIES})..."
+    rm -rf /var/lib/apt/lists/partial
+    mkdir -p /var/lib/apt/lists/partial
+
+    if apt_get update -y; then
+      return 0
+    fi
+
+    log "apt-get update failed; clearing package lists before retry."
+    rm -rf /var/lib/apt/lists/*
+    sleep "$attempt"
+  done
+
+  log "ERROR: apt-get update failed after ${APT_RETRIES} attempts."
+  exit 1
+}
+
 if ! command -v apt-get >/dev/null 2>&1; then
-  wget "https://sourceforge.net/projects/torcs/files/all-in-one/1.3.7/torcs-1.3.7.tar.bz2/download" -O torcs-1.3.7.tar.bz2
   log "ERROR: apt-get not found. This script targets Debian/Ubuntu (e.g. ubuntu:22.04)."
   exit 1
 fi
@@ -44,10 +73,10 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 
 if [ "$APT_UPDATE" != "0" ]; then
-  $SUDO apt-get -o Acquire::ForceIPv4=true update -y
+  apt_update_with_retries
 fi
 
-$SUDO apt-get -o Acquire::ForceIPv4=true install -y --no-install-recommends \
+apt_get install -y --no-install-recommends \
   build-essential \
   ca-certificates \
   procps \
@@ -78,7 +107,8 @@ $SUDO apt-get -o Acquire::ForceIPv4=true install -y --no-install-recommends \
   x11-utils \
   xbitmaps \
   xvfb \
-  xautomation
+  xautomation \
+  xdotool
 
 mkdir -p "${ROOT}/build" "${ARTIFACTS}"
 
@@ -120,6 +150,7 @@ fi
 export TORCS_BIN="${TORCS_INST}/bin/torcs"
 export TORCS_PREFIX="$TORCS_INST"
 export TORCS_DATADIR="${TORCS_INST}/share/games/torcs"
+export TORCS_HEADLESS="${TORCS_HEADLESS:-1}"
 
 log "TORCS_BIN=${TORCS_BIN}"
 log "Training (${TRAIN_EPISODES} episodes, max ${MAX_STEPS} steps/episode)..."

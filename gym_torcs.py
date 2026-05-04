@@ -27,13 +27,21 @@ class TorcsEnv:
         # Allow explicit binary override, e.g. /usr/games/torcs
         return os.environ.get("TORCS_BIN", "torcs")
 
+    @staticmethod
+    def _headless_race_config():
+        if os.environ.get("TORCS_HEADLESS") != "1":
+            return None
+        return os.path.expanduser("~/.torcs/config/raceman/practice.xml")
+
     @classmethod
     def _launch_torcs(cls, vision=False):
         torcs_bin = cls._torcs_bin()
+        race_config = cls._headless_race_config()
+        race_arg = f' -r "{race_config}"' if race_config else ""
         if vision:
-            os.system(f"{torcs_bin} -nofuel -nodamage -nolaptime -vision &")
+            os.system(f'{torcs_bin}{race_arg} -nofuel -nodamage -nolaptime -vision &')
         else:
-            os.system(f"{torcs_bin} -nofuel -nolaptime &")
+            os.system(f'{torcs_bin}{race_arg} -nofuel -nolaptime &')
 
     @staticmethod
     def _ensure_scr_server_user_config():
@@ -226,9 +234,12 @@ class TorcsEnv:
         os.system("pkill -f torcs")
         time.sleep(0.5)
         self._launch_torcs(self.vision)
-        time.sleep(0.5)
-        os.system('sh autostart.sh')
-        time.sleep(0.5)
+        if self._headless_race_config():
+            time.sleep(1.0)
+        else:
+            time.sleep(0.5)
+            os.system('sh autostart.sh')
+            time.sleep(0.5)
 
         """
         # Modify here if you use multiple tracks in the environment
@@ -483,9 +494,12 @@ class TorcsEnv:
         os.system("pkill -f torcs")
         time.sleep(1.0)
         self._launch_torcs(self.vision)
-        time.sleep(3.0)  # Wait for GUI to load
-        os.system('sh autostart.sh')
-        time.sleep(1.0)
+        if self._headless_race_config():
+            time.sleep(1.0)
+        else:
+            time.sleep(3.0)  # Wait for GUI to load
+            os.system('sh autostart.sh')
+            time.sleep(1.0)
 
     def agent_to_torcs(self, u):
         torcs_action = {'steer': u[0]}

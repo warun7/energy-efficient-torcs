@@ -44,10 +44,10 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 
 if [ "$APT_UPDATE" != "0" ]; then
-  $SUDO apt-get update -y
+  $SUDO apt-get -o Acquire::ForceIPv4=true update -y
 fi
 
-$SUDO apt-get install -y --no-install-recommends \
+$SUDO apt-get -o Acquire::ForceIPv4=true install -y --no-install-recommends \
   build-essential \
   ca-certificates \
   procps \

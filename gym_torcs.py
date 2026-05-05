@@ -11,6 +11,7 @@ import numpy as np
 import copy
 import collections as col
 import os
+import shlex
 import shutil
 import time
 
@@ -21,6 +22,8 @@ class TorcsEnv:
     default_speed = 50
 
     initial_reset = True
+    GUI_BOOT_WAIT = 5.0
+    GUI_MENU_WAIT = 2.0
 
     @staticmethod
     def _torcs_bin():
@@ -30,10 +33,22 @@ class TorcsEnv:
     @classmethod
     def _launch_torcs(cls, vision=False):
         torcs_bin = cls._torcs_bin()
+        args = "-nofuel -nodamage -nolaptime -vision" if vision else "-nofuel -nolaptime"
+        log_path = os.environ.get("TORCS_LAUNCH_LOG")
         if vision:
-            os.system(f"{torcs_bin} -nofuel -nodamage -nolaptime -vision &")
+            cmd = f"{torcs_bin} {args}"
         else:
-            os.system(f"{torcs_bin} -nofuel -nolaptime &")
+            cmd = f"{torcs_bin} {args}"
+        if log_path:
+            cmd = f"{cmd} >> {shlex.quote(log_path)} 2>&1"
+        os.system(f"{cmd} &")
+
+    @staticmethod
+    def _stop_torcs_processes():
+        # `pkill -f torcs` also matches wrapper commands like `xvfb-run ... TORCS_BIN=...`
+        # and can kill the training shell before run.sh reaches evaluation.
+        os.system("pkill -x torcs-bin >/dev/null 2>&1 || true")
+        os.system("pkill -x torcs >/dev/null 2>&1 || true")
 
     @staticmethod
     def _ensure_scr_server_user_config():
@@ -65,6 +80,37 @@ class TorcsEnv:
             return
         os.makedirs(user_driver_dir, exist_ok=True)
         shutil.copy2(source_xml, user_driver_xml)
+
+    @staticmethod
+    def _ensure_sound_disabled():
+        disabled_sound_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE params SYSTEM "params.dtd">
+
+
+<params name="sound">
+  <section name="Sound Settings">
+    <attstr name="state" val="disabled"/>
+    <attnum name="volume" unit="%" val="100"/>
+  </section>
+
+</params>
+"""
+
+        candidates = [os.path.expanduser("~/.torcs/config/sound.xml")]
+        prefix = os.environ.get("TORCS_PREFIX")
+        if prefix:
+            candidates.append(os.path.join(prefix, "share", "games", "torcs", "config", "sound.xml"))
+        data = os.environ.get("TORCS_DATADIR")
+        if data:
+            candidates.append(os.path.join(data, "config", "sound.xml"))
+
+        for path in dict.fromkeys(candidates):
+            try:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write(disabled_sound_xml)
+            except OSError:
+                pass
 
     @staticmethod
     def _force_raceman_track(track_name="aalborg", category="road"):
@@ -170,6 +216,14 @@ class TorcsEnv:
             "    </section>\n"
             "  </section>"
         )
+        start_list_block = (
+            "  <section name=\"Drivers Start List\">\n"
+            "    <section name=\"1\">\n"
+            "      <attstr name=\"module\" val=\"scr_server\"/>\n"
+            "      <attnum name=\"idx\" val=\"0\"/>\n"
+            "    </section>\n"
+            "  </section>"
+        )
 
         for race_dir in config_dirs:
             for name in xml_names:
@@ -192,6 +246,13 @@ class TorcsEnv:
                         # If section is missing/malformed, skip rather than writing junk.
                         continue
                     txt = txt_new
+                    txt = re.sub(
+                        r'<section name="Drivers Start List">[\s\S]*?</section>',
+                        start_list_block,
+                        txt,
+                        flags=0,
+                        count=1,
+                    )
                     
                     # Try to write back (handling potential root-owned files)
                     try:
@@ -210,8 +271,10 @@ class TorcsEnv:
         self.vision = vision
         self.throttle = throttle
         self.gear_change = gear_change
+        os.environ.setdefault("ALSOFT_DRIVERS", "null")
 
         self.initial_run = True
+        self._ensure_sound_disabled()
         self._ensure_scr_server_user_config()
         self._ensure_raceman_practice_config()
         self._normalize_raceman_driver_block()
@@ -223,12 +286,7 @@ class TorcsEnv:
         self._lap_start_step = 0
         self.stuck_steps = 0
 
-        os.system("pkill -f torcs")
-        time.sleep(0.5)
-        self._launch_torcs(self.vision)
-        time.sleep(0.5)
-        os.system('sh autostart.sh')
-        time.sleep(0.5)
+        self._start_torcs_session()
 
         """
         # Modify here if you use multiple tracks in the environment
@@ -473,19 +531,22 @@ class TorcsEnv:
         return self.get_obs()
 
     def end(self):
-        os.system("pkill -f torcs")
+        self._stop_torcs_processes()
 
     def get_obs(self):
         return self.observation
 
     def reset_torcs(self):
        #print("relaunch torcs")
-        os.system("pkill -f torcs")
+        self._start_torcs_session()
+
+    def _start_torcs_session(self):
+        self._stop_torcs_processes()
         time.sleep(1.0)
         self._launch_torcs(self.vision)
-        time.sleep(3.0)  # Wait for GUI to load
+        time.sleep(self.GUI_BOOT_WAIT)  # Wait for GUI to load
         os.system('sh autostart.sh')
-        time.sleep(1.0)
+        time.sleep(self.GUI_MENU_WAIT)
 
     def agent_to_torcs(self, u):
         torcs_action = {'steer': u[0]}

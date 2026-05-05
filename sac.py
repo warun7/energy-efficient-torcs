@@ -13,6 +13,143 @@ import argparse
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+
+def _scalar(x):
+    return float(np.asarray(x, dtype=np.float32).reshape(-1)[0])
+
+
+def clip_action(action):
+    clipped = np.asarray(action, dtype=np.float32).copy()
+    clipped[0] = np.clip(clipped[0], -1.0, 1.0)
+    clipped[1] = np.clip(clipped[1], 0.0, 1.0)
+    clipped[2] = np.clip(clipped[2], 0.0, 1.0)
+    return clipped
+
+
+def blend_actions(guide_action, policy_action, policy_mix):
+    policy_mix = float(np.clip(policy_mix, 0.0, 1.0))
+    return clip_action(((1.0 - policy_mix) * guide_action) + (policy_mix * policy_action))
+
+
+def heuristic_action(obs):
+    """
+    Track-following control prior adapted from TORCS SimpleDriver/snakeoil.
+
+    The default training horizon in this project is short, so a safe guide
+    controller keeps early rollouts on-track long enough for SAC to get
+    meaningful replay data instead of learning exclusively from DNFs.
+    """
+    angle = _scalar(obs.angle)            # normalized by pi in make_observaton()
+    angle_rad = angle * np.pi
+    track_pos = _scalar(obs.trackPos)     # centered at 0, roughly [-1, 1]
+    speed_kmh = max(0.0, _scalar(obs.speedX) * 300.0)
+    track = np.asarray(obs.track, dtype=np.float32).reshape(-1)
+    center_idx = len(track) // 2 if track.size else 0
+    front_sensor = float(track[center_idx]) if track.size else 0.0
+    left_sensor = float(track[max(center_idx - 1, 0)]) if track.size else 0.0
+    right_sensor = float(track[min(center_idx + 1, track.size - 1)]) if track.size else 0.0
+
+    # SimpleDriver-inspired steering: follow the track axis and recenter, then
+    # damp the command at speed to avoid snap over-rotation in long episodes.
+    steer_lock = 0.785398
+    target_angle = angle_rad - (track_pos * 0.55)
+    if speed_kmh > 80.0:
+        steer = target_angle / (steer_lock * max(speed_kmh - 80.0, 1.0))
+    else:
+        steer = target_angle / steer_lock
+    steer = float(np.clip(steer, -1.0, 1.0))
+
+    # Estimate corner severity from the forward-facing sensors. This gives the
+    # guide a way to back off before the heading error explodes into a spin-out.
+    target_speed = 105.0
+    if track.size >= 11 and abs(track_pos) < 1.0:
+        sin5 = 0.08716
+        cos5 = 0.99619
+        max_speed_dist = 90.0
+        max_speed = 120.0
+
+        if front_sensor > max_speed_dist or (front_sensor >= left_sensor and front_sensor >= right_sensor):
+            target_speed = max_speed
+        else:
+            if right_sensor > left_sensor:
+                h = front_sensor * sin5
+                b = right_sensor - (front_sensor * cos5)
+            else:
+                h = front_sensor * sin5
+                b = left_sensor - (front_sensor * cos5)
+            sin_angle = (b * b) / max((h * h) + (b * b), 1e-6)
+            target_speed = max_speed * (front_sensor * sin_angle / max_speed_dist)
+
+    target_speed = float(np.clip(target_speed, 35.0, 120.0))
+    target_speed -= 30.0 * min(abs(track_pos), 1.0)
+    target_speed -= 55.0 * min(abs(angle_rad), 0.7)
+    if front_sensor < 40.0:
+        target_speed = min(target_speed, 55.0)
+    if abs(track_pos) > 0.65:
+        target_speed = min(target_speed, 50.0)
+    target_speed = float(np.clip(target_speed, 30.0, 120.0))
+
+    speed_error = target_speed - speed_kmh
+    accel_brake = (2.0 / (1.0 + np.exp((speed_kmh - target_speed) / 12.0))) - 1.0
+    if accel_brake >= 0.0:
+        accel = float(np.clip(accel_brake, 0.0, 1.0))
+        brake = 0.0
+    else:
+        accel = 0.0
+        brake = float(np.clip(-accel_brake, 0.0, 1.0))
+
+    if speed_kmh < 20.0:
+        accel = max(accel, 0.55)
+        brake = 0.0
+
+    if abs(angle_rad) > 0.30:
+        accel = min(accel, 0.20)
+        brake = max(brake, 0.30)
+
+    if abs(track_pos) > 0.80:
+        accel = min(accel, 0.15)
+        brake = max(brake, 0.35)
+
+    if speed_error < -20.0:
+        brake = max(brake, min(0.8, (-speed_error) / 45.0))
+        accel = min(accel, 0.10)
+
+    return clip_action(np.array([steer, accel, brake], dtype=np.float32))
+
+
+def policy_mix_from_buffer_size(buffer_size, warmup_steps, ramp_steps, max_mix=1.0):
+    mix = np.clip((buffer_size - warmup_steps) / max(float(ramp_steps), 1.0), 0.0, 1.0)
+    return float(np.clip(mix * max_mix, 0.0, 1.0))
+
+
+def checkpoint_score(summary):
+    lap_time_sec = summary.get("lap_time_sec")
+    finished = bool(summary.get("finished", False))
+    lap_speed_score = 0.0
+    if finished and lap_time_sec:
+        lap_speed_score = 1.0 / max(float(lap_time_sec), 1.0)
+
+    termination_reason = summary.get("termination_reason")
+    termination_rank = {
+        "lap_complete": 4,
+        "race_finished_socket_closed": 4,
+        "max_steps": 3,
+        "off_track": 2,
+        "spin_out": 1,
+        "backward": 0,
+        "stuck": -1,
+    }.get(termination_reason, 0)
+
+    return (
+        1 if finished else 0,
+        int(summary.get("lap_count", 0)),
+        termination_rank,
+        float(summary.get("episode_distance_raced_m", 0.0)),
+        int(summary.get("steps_taken", 0)),
+        lap_speed_score,
+        float(summary.get("reward_total", -np.inf)),
+    )
+
 class ReplayBuffer:
     def __init__(self, max_size):
         self.buffer = deque(maxlen=max_size)
@@ -155,7 +292,7 @@ class SAC:
         self.actor.train()
         return action.detach().cpu().numpy()[0]
 
-    def train(self, replay_buffer, batch_size=128):
+    def train(self, replay_buffer, batch_size=128, behavior_cloning_weight=0.0):
         state, action, reward, next_state, done = replay_buffer.sample(batch_size)
 
         state = torch.FloatTensor(state).to(device)
@@ -182,6 +319,8 @@ class SAC:
         min_q_pi = torch.min(q1_pi, q2_pi)
         
         actor_loss = ((self.log_alpha.exp() * log_prob) - min_q_pi).mean()
+        if behavior_cloning_weight > 0.0:
+            actor_loss = actor_loss + (behavior_cloning_weight * F.mse_loss(pi, action))
 
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
@@ -215,6 +354,24 @@ class SAC:
             loaded_log_alpha = torch.load(log_alpha_path, map_location=device)
             self.log_alpha.data.copy_(loaded_log_alpha.to(device))
 
+
+def load_checkpoint_metadata(filename):
+    metadata_path = filename + "_meta.json"
+    if not os.path.exists(metadata_path):
+        return None
+    with open(metadata_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_checkpoint_metadata(filename, summary, score):
+    metadata_path = filename + "_meta.json"
+    payload = {
+        "summary": summary,
+        "score": list(score),
+    }
+    with open(metadata_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--train", type=int, default=1)
@@ -238,6 +395,15 @@ def main():
     
     state_dim = 32
     action_dim = 3
+    batch_size = 64
+    guided_warmup_steps = 384
+    min_replay_to_train = 128
+    policy_ramp_steps = 4000
+    train_noise_scale = np.array([0.02, 0.05, 0.03], dtype=np.float32)
+    eval_policy_mix = 0.05
+    behavior_cloning_weight = 0.05
+    train_policy_mix_cap = 0.20
+    finisher_policy_mix_cap = 0.60
 
     agent = SAC(state_dim, action_dim)
     replay_buffer = ReplayBuffer(100000)
@@ -245,16 +411,32 @@ def main():
     stats_path = os.path.join(args.artifact_dir, f"episode_stats_{args.run_tag}.json")
 
     best_reward = -np.inf
+    best_model_score = None
     model_path = os.path.join(args.artifact_dir, args.model_prefix)
     checkpoint_exists = os.path.exists(model_path + "_actor.pth") and os.path.exists(model_path + "_critic.pth")
+    checkpoint_metadata = load_checkpoint_metadata(model_path) if checkpoint_exists else None
 
+    checkpoint_loaded = False
     if checkpoint_exists and args.resume:
-        agent.load(model_path)
-        print(f"Loaded model checkpoint from {model_path}")
+        try:
+            agent.load(model_path)
+            checkpoint_loaded = True
+            print(f"Loaded model checkpoint from {model_path}")
+        except Exception as exc:
+            print(f"Failed to load checkpoint from {model_path}: {exc}")
+            print("Starting from fresh weights instead.")
+            checkpoint_exists = False
     elif not checkpoint_exists and not args.train:
         print(f"No trained model found at {model_path}, running with random weights.")
     elif checkpoint_exists and not args.resume:
         print(f"Checkpoint exists at {model_path}, but resume is disabled. Starting fresh.")
+
+    best_checkpoint_finished = bool(
+        checkpoint_metadata
+        and checkpoint_metadata.get("summary", {}).get("finished", False)
+    )
+    effective_eval_policy_mix = eval_policy_mix if best_checkpoint_finished else 0.0
+    saw_training_finish = False
 
     for ep in range(args.episodes):
         obs = env.reset(relaunch=True)
@@ -268,20 +450,29 @@ def main():
         min_fuel_budget_remaining = float("inf")
         
         for t in range(args.max_steps):
+            guide_action = heuristic_action(obs)
             if args.train:
-                if len(replay_buffer) < 1000:
-                    # Random actions from space limits
-                    # Steer: [-1, 1], Accel: [0, 1], Brake: [0, 1]
-                    # Biased to accelerate instead of getting stuck
-                    action = np.array([
-                        np.random.uniform(-0.1, 0.1),  # steer slightly
-                        np.random.uniform(0.5, 1.0),   # mostly accelerate
-                        np.random.uniform(0.0, 0.1)    # rarely brake
-                    ])
+                if len(replay_buffer) < guided_warmup_steps:
+                    action = guide_action
+                    noise_scale = train_noise_scale
                 else:
-                    action = agent.select_action(state, evaluate=False)
+                    policy_action = agent.select_action(state, evaluate=False)
+                    current_mix_cap = finisher_policy_mix_cap if saw_training_finish else train_policy_mix_cap
+                    policy_mix = policy_mix_from_buffer_size(
+                        len(replay_buffer),
+                        guided_warmup_steps,
+                        policy_ramp_steps,
+                        max_mix=current_mix_cap,
+                    )
+                    action = blend_actions(guide_action, policy_action, policy_mix)
+                    noise_scale = train_noise_scale * max(0.15, 1.0 - policy_mix)
+                action = clip_action(action + np.random.normal(0.0, noise_scale, size=3))
             else:
-                action = agent.select_action(state, evaluate=True)
+                if checkpoint_loaded:
+                    policy_action = agent.select_action(state, evaluate=True)
+                    action = blend_actions(guide_action, policy_action, effective_eval_policy_mix)
+                else:
+                    action = guide_action
                 
             obs, reward, done, info = env.step(action)
             next_state = flatten_state(obs)
@@ -289,8 +480,12 @@ def main():
             if args.train:
                 # Store unscaled action if needed, but our buffer stores scaled action
                 replay_buffer.push(state, action, reward, next_state, done)
-                if len(replay_buffer) > 1000:
-                    agent.train(replay_buffer, batch_size=128)
+                if len(replay_buffer) >= min_replay_to_train:
+                    agent.train(
+                        replay_buffer,
+                        batch_size=min(batch_size, len(replay_buffer)),
+                        behavior_cloning_weight=behavior_cloning_weight,
+                    )
                     
             state = next_state
             ep_reward += reward
@@ -364,6 +559,7 @@ def main():
             "fuel_budget_remaining_min": float(
                 min_fuel_budget_remaining if min_fuel_budget_remaining != float("inf") else 0.0
             ),
+            "episode_distance_raced_m": float(episode_last_info.get("episode_distance_raced_m", 0.0)),
             "track_progress_last": float(episode_last_info.get("track_progress", 0.0)),
             "peak_speed_kmh": float(peak_speed_kmh),
             "final_speed_kmh": float(episode_last_info.get("speedX_kmh", 0.0)),
@@ -372,6 +568,8 @@ def main():
             "best_reward_so_far": float(max(best_reward, ep_reward)),
         }
         episode_stats.append(episode_summary)
+        best_reward = max(best_reward, ep_reward)
+        saw_training_finish = saw_training_finish or lap_completed
 
         with open(stats_path, "w", encoding="utf-8") as sf:
             json.dump(episode_stats, sf, indent=2)
@@ -389,10 +587,18 @@ def main():
             f"FuelLambda: {episode_summary['fuel_lambda']:.3f}"
         )
         
-        if args.train and ep_reward > best_reward:
-            best_reward = ep_reward
-            agent.save(model_path)
-            print(f"Saved new best model with reward: {best_reward:.2f}")
+        if args.train:
+            model_score = checkpoint_score(episode_summary)
+            if best_model_score is None or model_score > best_model_score:
+                best_model_score = model_score
+                distance_m = float(episode_summary["episode_distance_raced_m"])
+                finish_note = "finish" if lap_completed else f"{distance_m:.0f}m raced"
+                agent.save(model_path)
+                save_checkpoint_metadata(model_path, episode_summary, model_score)
+                print(
+                    f"Saved new best model with reward: {ep_reward:.2f} "
+                    f"({finish_note})"
+                )
             
     env.end()
 

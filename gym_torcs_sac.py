@@ -11,6 +11,7 @@ import numpy as np
 import copy
 import collections as col
 import os
+import shlex
 import shutil
 import time
 
@@ -26,6 +27,8 @@ class TorcsEnv:
     STUCK_MIN_PROGRESS = 8.0  # minimum metres required in that window
 
     initial_reset = True
+    GUI_BOOT_WAIT = 5.0
+    GUI_MENU_WAIT = 2.0
 
     @staticmethod
     def _torcs_bin():
@@ -35,10 +38,22 @@ class TorcsEnv:
     @classmethod
     def _launch_torcs(cls, vision=False):
         torcs_bin = cls._torcs_bin()
+        args = "-nodamage -vision" if vision else ""
+        log_path = os.environ.get("TORCS_LAUNCH_LOG")
         if vision:
-            os.system(f"{torcs_bin} -nodamage -vision &")
+            cmd = f"{torcs_bin} {args}"
         else:
-            os.system(f"{torcs_bin} &")
+            cmd = torcs_bin
+        if log_path:
+            cmd = f"{cmd} >> {shlex.quote(log_path)} 2>&1"
+        os.system(f"{cmd} &")
+
+    @staticmethod
+    def _stop_torcs_processes():
+        # `pkill -f torcs` also matches wrapper commands like `xvfb-run ... TORCS_BIN=...`
+        # and can kill the training shell before run.sh reaches evaluation.
+        os.system("pkill -x torcs-bin >/dev/null 2>&1 || true")
+        os.system("pkill -x torcs >/dev/null 2>&1 || true")
 
     @staticmethod
     def _ensure_scr_server_user_config():
@@ -70,6 +85,37 @@ class TorcsEnv:
             return
         os.makedirs(user_driver_dir, exist_ok=True)
         shutil.copy2(source_xml, user_driver_xml)
+
+    @staticmethod
+    def _ensure_sound_disabled():
+        disabled_sound_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE params SYSTEM "params.dtd">
+
+
+<params name="sound">
+  <section name="Sound Settings">
+    <attstr name="state" val="disabled"/>
+    <attnum name="volume" unit="%" val="100"/>
+  </section>
+
+</params>
+"""
+
+        candidates = [os.path.expanduser("~/.torcs/config/sound.xml")]
+        prefix = os.environ.get("TORCS_PREFIX")
+        if prefix:
+            candidates.append(os.path.join(prefix, "share", "games", "torcs", "config", "sound.xml"))
+        data = os.environ.get("TORCS_DATADIR")
+        if data:
+            candidates.append(os.path.join(data, "config", "sound.xml"))
+
+        for path in dict.fromkeys(candidates):
+            try:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write(disabled_sound_xml)
+            except OSError:
+                pass
 
     @staticmethod
     def _force_raceman_track(track_name="aalborg", category="road"):
@@ -175,6 +221,14 @@ class TorcsEnv:
             "    </section>\n"
             "  </section>"
         )
+        start_list_block = (
+            "  <section name=\"Drivers Start List\">\n"
+            "    <section name=\"1\">\n"
+            "      <attstr name=\"module\" val=\"scr_server\"/>\n"
+            "      <attnum name=\"idx\" val=\"0\"/>\n"
+            "    </section>\n"
+            "  </section>"
+        )
 
         for race_dir in config_dirs:
             for name in xml_names:
@@ -197,6 +251,13 @@ class TorcsEnv:
                         # If section is missing/malformed, skip rather than writing junk.
                         continue
                     txt = txt_new
+                    txt = re.sub(
+                        r'<section name="Drivers Start List">[\s\S]*?</section>',
+                        start_list_block,
+                        txt,
+                        flags=0,
+                        count=1,
+                    )
                     
                     # Try to write back (handling potential root-owned files)
                     try:
@@ -217,8 +278,10 @@ class TorcsEnv:
         self.gear_change = gear_change
         self.fuel_lambda = float(fuel_lambda)
         self.max_laps = int(max_laps)
+        os.environ.setdefault("ALSOFT_DRIVERS", "null")
 
         self.initial_run = True
+        self._ensure_sound_disabled()
         self._ensure_scr_server_user_config()
         self._ensure_raceman_practice_config()
         self._normalize_raceman_driver_block()
@@ -238,7 +301,7 @@ class TorcsEnv:
 
         self.initial_fuel = None
         self.total_fuel_consumed = 0.0
-        self.total_fuel_budget = np.random.uniform(3.0, 8.0)
+        self.total_fuel_budget = 5.0  # 1-lap budget
         self.next_waypoint = 500.0
         self.waypoint_start_step = 0
         self.last_fuel_penalty = 0.0
@@ -249,12 +312,7 @@ class TorcsEnv:
         # Fix 3: 20-step rolling window for smooth fuel consumption rate
         self._fuel_history = col.deque(maxlen=20)
 
-        os.system("pkill -f torcs")
-        time.sleep(0.5)
-        self._launch_torcs(self.vision)
-        time.sleep(0.5)
-        os.system('sh autostart.sh')
-        time.sleep(0.5)
+        self._start_torcs_session()
 
         """
         # Modify here if you use multiple tracks in the environment
@@ -365,38 +423,32 @@ class TorcsEnv:
         progress = sp * np.cos(obs['angle']) - np.abs(sp * np.sin(obs['angle']))
         reward = progress / 5.0  # at 50 km/h ≈ +10.0 per step
 
-        # Budget-Aware Soft Penalty
+        # Give the agent a dense signal to stay near the lane center and avoid
+        # large heading errors before it reaches a terminal off-track state.
+        track_center_error = float(min(abs(trackPos), 1.0))
+        reward -= 0.5 * track_center_error
+        if abs(trackPos) > 0.7:
+            reward -= (abs(trackPos) - 0.7) * 10.0
+        reward -= 1.5 * min(abs(obs['angle']), 0.5)
+
+        # Fuel Lagrangian Soft Penalty with 20-step rolling average
         current_fuel = obs.get('fuel', 100.0)
         if self.initial_fuel is None:
             self.initial_fuel = current_fuel
-        
-        FUEL_SCALING = 5.0
-        fuel_consumed = (self.initial_fuel - current_fuel) * FUEL_SCALING
-        fuel_remaining = self.total_fuel_budget - fuel_consumed
-        b_t = fuel_remaining / max(self.total_fuel_budget, 0.001)
-        b_t = np.clip(b_t, 0.0, 1.0)
-
         step_fuel_delta = obs_pre.get('fuel', 100.0) - current_fuel
-        fuel_consumed_this_step = max(0.0, step_fuel_delta) * FUEL_SCALING
-
-        depletion_rate = fuel_consumed_this_step / max(b_t, 0.01)
-        nominal_depletion_rate = self.total_fuel_budget / 1000.0
-        budget_penalty = -0.3 * max(0.0, depletion_rate - nominal_depletion_rate)
-
-        if not hasattr(self, "_printed_fuel_rate") and fuel_consumed_this_step > 0:
-            print(f"Scaled step fuel: {fuel_consumed_this_step:.6f}, target rate: {nominal_depletion_rate:.6f}")
-            self._printed_fuel_rate = True
-
-        self.last_fuel_penalty = budget_penalty
-        self.last_budget_rate_target = nominal_depletion_rate
-        reward += budget_penalty
-
-        # Fuel-efficiency incentive on tight budgets.
-        # Gives the agent positive signal for keeping fuel in the tank when b_t < 0.5.
-        # Without this, tight budget episodes always end at -200 with no intermediate gradient.
-        if b_t < 0.5:
-            efficiency_bonus = 0.5 * b_t  # scales from 0 (empty) to 0.25 (half tank)
-            reward += efficiency_bonus
+        self._fuel_history.append(max(0.0, step_fuel_delta))  # track per-step consumption
+        fuel_consumed_rate_avg = float(np.mean(self._fuel_history)) if self._fuel_history else 0.0
+        # Budget rate for 1 lap — Aalborg ≈ 2500 steps at moderate speed
+        budget_rate_target = self.total_fuel_budget / 2500.0
+        lambda_penalty = self.fuel_lambda
+        # max(0,...) means only over-consumption is penalised — driving efficiently is neutral
+        over_consumption = max(0.0, fuel_consumed_rate_avg - budget_rate_target)
+        fuel_penalty = lambda_penalty * (over_consumption / max(budget_rate_target, 1e-6))
+        self.last_fuel_rate_avg = fuel_consumed_rate_avg
+        self.last_budget_rate_target = budget_rate_target
+        self.last_over_consumption = over_consumption
+        self.last_fuel_penalty = fuel_penalty
+        reward -= fuel_penalty
 
         # Minimum-speed pressure: constant -0.5/step whenever going slower than 10 km/h.
         # Removes the "sitting still is neutral" equilibrium without being a terminal.
@@ -471,7 +523,7 @@ class TorcsEnv:
         # Fix 1: Terminal penalties raised to -200 to be meaningful against ~25k max episode reward
 
         # 1. Out of track termination
-        if abs(trackPos) > 0.999:
+        if abs(trackPos) > 1.05:
             print(">>> OFF TRACK TERMINATION <<<")
             reward -= 200.0
             episode_terminate = True
@@ -513,23 +565,6 @@ class TorcsEnv:
             client.R.d['meta'] = True
             self.last_termination_reason = "backward"
 
-        # 5. Budget Exhaustion Terminal
-        current_fuel = obs.get('fuel', 100.0)
-        FUEL_SCALING = 5.0
-        fuel_consumed = (self.initial_fuel - current_fuel) * FUEL_SCALING if self.initial_fuel is not None else 0.0
-        fuel_remaining = self.total_fuel_budget - fuel_consumed
-        if fuel_remaining <= 0:
-            # Progress-proportional partial credit: makes "farther before empty" better than "less far"
-            # At 72% progress: -200 + 108 = -92 instead of flat -200
-            # This creates a differentiable gradient pushing agent to stretch fuel further each episode
-            dist_raced_this_ep = max(0.0, obs.get('distRaced', 0.0) - self._episode_dist_raced_start)
-            track_progress_frac = min(1.0, dist_raced_this_ep / self.AALBORG_TRACK_LENGTH)
-            print(f">>> FUEL EXHAUSTION TERMINATION <<< (progress: {track_progress_frac:.2%})")
-            reward -= (200.0 - 150.0 * track_progress_frac)  # flat -200 at 0%, -50 at 100%
-            episode_terminate = True
-            client.R.d['meta'] = True
-            self.last_termination_reason = "fuel_exhaustion"
-
         if client.R.d['meta'] is True:  # Send a reset signal
             self.initial_run = False
             client.respond_to_server()
@@ -541,7 +576,7 @@ class TorcsEnv:
             self.last_termination_reason = "terminated"
         return self.get_obs(), reward, done, self._build_step_info(done=done, reward=reward, speed_kmh=float(sp))
 
-    def reset(self, relaunch=False, budget=None):
+    def reset(self, relaunch=False):
         #print("Reset")
 
         self.time_step = 0
@@ -558,7 +593,6 @@ class TorcsEnv:
 
         self.initial_fuel = None
         self.total_fuel_consumed = 0.0
-        self.total_fuel_budget = budget if budget is not None else np.random.uniform(3.0, 8.0)
         self.next_waypoint = 500.0
         self.waypoint_start_step = 0
         self.last_fuel_penalty = 0.0
@@ -597,7 +631,7 @@ class TorcsEnv:
         return self.get_obs()
 
     def end(self):
-        os.system("pkill -f torcs")
+        self._stop_torcs_processes()
 
     def get_obs(self):
         return self.observation
@@ -605,10 +639,12 @@ class TorcsEnv:
     def _build_step_info(self, done=False, reward=0.0, speed_kmh=0.0):
         current_fuel = 0.0
         fuel_consumed = 0.0
-        FUEL_SCALING = 5.0
+        episode_distance_raced = 0.0
         if self.initial_fuel is not None and hasattr(self, "client") and hasattr(self.client, "S"):
             current_fuel = float(self.client.S.d.get("fuel", self.initial_fuel))
-            fuel_consumed = float((self.initial_fuel - current_fuel) * FUEL_SCALING)
+            fuel_consumed = float(self.initial_fuel - current_fuel)
+            current_dist_raced = float(self.client.S.d.get("distRaced", 0.0))
+            episode_distance_raced = max(0.0, current_dist_raced - self._episode_dist_raced_start)
         track_progress = 0.0
         fuel_budget_remaining = 0.0
         if hasattr(self, "observation") and self.observation is not None:
@@ -623,7 +659,6 @@ class TorcsEnv:
             "lap_completed": bool(self._lap_count >= self.max_laps),
             "lap_time_sec": float(self.last_lap_time) if self.last_lap_time is not None else None,
             "fuel_lambda": float(self.fuel_lambda),
-            "fuel_budget": float(self.total_fuel_budget),
             "fuel_current": float(current_fuel),
             "fuel_consumed": float(fuel_consumed),
             "fuel_penalty": float(self.last_fuel_penalty),
@@ -631,6 +666,7 @@ class TorcsEnv:
             "fuel_budget_rate_target": float(self.last_budget_rate_target),
             "fuel_over_consumption": float(self.last_over_consumption),
             "fuel_budget_remaining": float(fuel_budget_remaining),
+            "episode_distance_raced_m": float(episode_distance_raced),
             "track_progress": float(track_progress),
             "termination_reason": self.last_termination_reason if done else None,
             "done": bool(done),
@@ -638,12 +674,15 @@ class TorcsEnv:
 
     def reset_torcs(self):
        #print("relaunch torcs")
-        os.system("pkill -f torcs")
+        self._start_torcs_session()
+
+    def _start_torcs_session(self):
+        self._stop_torcs_processes()
         time.sleep(1.0)
         self._launch_torcs(self.vision)
-        time.sleep(5.0)  # Wait for GUI to load
+        time.sleep(self.GUI_BOOT_WAIT)  # Wait for GUI to load
         os.system('sh autostart.sh')
-        time.sleep(2.0)
+        time.sleep(self.GUI_MENU_WAIT)
 
     def agent_to_torcs(self, u):
         torcs_action = {'steer': u[0]}
@@ -675,14 +714,17 @@ class TorcsEnv:
         if self.initial_fuel is None:
             self.initial_fuel = current_fuel
 
-        FUEL_SCALING = 5.0
-        fuel_consumed = (self.initial_fuel - current_fuel) * FUEL_SCALING
-        fuel_level = (self.initial_fuel - (fuel_consumed / FUEL_SCALING)) / max(1.0, self.initial_fuel)
+        fuel_level = current_fuel / max(1.0, self.initial_fuel)
+        fuel_consumed = self.initial_fuel - current_fuel
 
-        fuel_remaining = self.total_fuel_budget - fuel_consumed
-        fuel_budget_remaining = fuel_remaining / max(self.total_fuel_budget, 0.001)
-        fuel_budget_remaining = np.clip(fuel_budget_remaining, 0.0, 1.0)
-        b_t = fuel_budget_remaining
+        # Fix 2: Prospective FuelBudgetRemaining
+        # Formula: fuel_remaining / (total_budget * (1 - track_progress))
+        # >1 means ahead of budget, <1 means burning too fast, clamped to [0,5]
+        dist_from_start = raw_obs.get('distFromStart', 0.0)
+        track_progress = (dist_from_start % self.AALBORG_TRACK_LENGTH) / self.AALBORG_TRACK_LENGTH
+        fuel_remaining_vs_budget = self.total_fuel_budget - fuel_consumed
+        budget_still_needed = self.total_fuel_budget * max(0.001, 1.0 - track_progress)
+        fuel_budget_remaining = min(5.0, fuel_remaining_vs_budget / budget_still_needed)
 
         if self.vision is False:
             names = ['focus',
@@ -694,8 +736,7 @@ class TorcsEnv:
                      'wheelSpinVel',
                      'fuelLevel',
                      'fuelConsumed',
-                     'fuelBudgetRemaining',
-                     'b_t']
+                     'fuelBudgetRemaining']
             Observation = col.namedtuple('Observaion', names)
             return Observation(focus=np.array(raw_obs['focus'], dtype=np.float32)/200.,
                                speedX=np.array(raw_obs['speedX'], dtype=np.float32)/300.0,
@@ -710,8 +751,7 @@ class TorcsEnv:
                                wheelSpinVel=np.array(raw_obs['wheelSpinVel'], dtype=np.float32),
                                fuelLevel=np.array([fuel_level], dtype=np.float32),
                                fuelConsumed=np.array([fuel_consumed], dtype=np.float32),
-                               fuelBudgetRemaining=np.array([fuel_budget_remaining], dtype=np.float32),
-                               b_t=np.array([b_t], dtype=np.float32))
+                               fuelBudgetRemaining=np.array([fuel_budget_remaining], dtype=np.float32))
         else:
             names = ['focus',
                      'speedX', 'speedY', 'speedZ', 'angle',
